@@ -1,32 +1,66 @@
+"""
+data_preprocessing.py
+
+This script reads raw season CSV files from data/raw/, merges and cleans them,
+resolves any team name mismatches (using a mapping), merges team ratings and Understat stats,
+and finally writes the cleaned combined dataset to data/processed/combined_dataset_clean.csv.
+"""
+
 import os
 import pandas as pd
 
-def load_match_data():
-    # Load season match files and keep only essential columns
-    files = ["2021-2022.csv", "2022-2023.csv", "2023-2024.csv", "2024-2025.csv"]
+# Define paths for raw and processed data
+RAW_DATA_PATH = os.path.join("data", "raw")
+PROCESSED_DATA_PATH = os.path.join("data", "processed")
+
+def load_season_csv(filename: str) -> pd.DataFrame:
+    """
+    Load a season CSV file from data/raw/ and do minimal processing.
+    """
+    filepath = os.path.join(RAW_DATA_PATH, filename)
+    df = pd.read_csv(filepath)
+    df.columns = [col.strip() for col in df.columns]
+    # Convert Date column to datetime (if present)
+    if "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce")
+    # Use the filename (without extension) as Season (e.g. "2021-2022")
+    season = os.path.splitext(filename)[0]
+    df["Season"] = season
+    return df
+
+def merge_season_files() -> pd.DataFrame:
+    """
+    Load and merge multiple season CSV files.
+    """
+    # List of season files to load
+    season_files = ["2021-2022.csv", "2022-2023.csv", "2023-2024.csv", "2024-2025.csv"]
     keep_cols = ["Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG", "FTR", "PSH", "PSD", "PSA"]
     df_list = []
-    for file in files:
-        if os.path.exists(file):
-            df = pd.read_csv(file)
+    for file in season_files:
+        filepath = os.path.join(RAW_DATA_PATH, file)
+        if os.path.exists(filepath):
+            df = pd.read_csv(filepath)
             df.columns = [col.strip() for col in df.columns]
-            # Convert Date to datetime
             if "Date" in df.columns:
                 df["Date"] = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce")
-            # Use file name as Season (e.g. "2021-2022")
-            season = file.split(".")[0]
+            season = os.path.splitext(file)[0]
             df["Season"] = season
-            # Keep only the needed columns (if available)
+            # Keep only columns that are available plus Season
             cols_to_use = [c for c in keep_cols if c in df.columns]
             df = df[cols_to_use + ["Season"]]
             df_list.append(df)
         else:
-            print(f"File {file} not found.")
-    return pd.concat(df_list, ignore_index=True) if df_list else pd.DataFrame()
+            print(f"File {file} not found in {RAW_DATA_PATH}.")
+    if df_list:
+        return pd.concat(df_list, ignore_index=True)
+    else:
+        return pd.DataFrame()
 
-def load_team_ratings():
-    # Load team ratings and convert Season format from "YYYY/YYYY" to "YYYY-YYYY"
-    ratings_file = "all_team_ratings.csv"
+def load_team_ratings() -> pd.DataFrame:
+    """
+    Load team ratings CSV from data/raw/ and convert Season format.
+    """
+    ratings_file = os.path.join(RAW_DATA_PATH, "all_team_ratings.csv")
     if os.path.exists(ratings_file):
         df = pd.read_csv(ratings_file)
         df.columns = [col.strip() for col in df.columns]
@@ -38,9 +72,11 @@ def load_team_ratings():
         print(f"File {ratings_file} not found.")
         return pd.DataFrame()
 
-def load_understat_stats():
-    # Load understat team stats and convert Season format; also convert xG, xGA, xPTS to numeric
-    understat_file = "understat_team_stats.csv"
+def load_understat_stats() -> pd.DataFrame:
+    """
+    Load Understat stats CSV from data/raw/ and convert Season format; also process xG, xGA, xPTS.
+    """
+    understat_file = os.path.join(RAW_DATA_PATH, "understat_team_stats.csv")
     if os.path.exists(understat_file):
         df = pd.read_csv(understat_file)
         df.columns = [col.strip() for col in df.columns]
@@ -48,7 +84,6 @@ def load_understat_stats():
             df["Season"] = df["Season"].str.replace("/", "-")
         keep = ["Season", "Team", "M", "W", "D", "L", "G", "GA", "PTS", "xG", "xGA", "xPTS"]
         df = df[keep]
-        # For columns xG, xGA, xPTS, extract the first numeric part (before any '+' or '-')
         for col in ["xG", "xGA", "xPTS"]:
             df[col] = df[col].astype(str).str.split(r'[+-]').str[0]
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -57,18 +92,26 @@ def load_understat_stats():
         print(f"File {understat_file} not found.")
         return pd.DataFrame()
 
-def preprocess_team_names(df, columns):
+def preprocess_team_names(df: pd.DataFrame, columns: list) -> pd.DataFrame:
+    """
+    Lowercase and strip whitespace from team names in specified columns.
+    """
     for col in columns:
         if col in df.columns:
             df[col] = df[col].astype(str).str.lower().str.strip()
     return df
 
-def apply_mapping(df, mapping, column):
+def apply_mapping(df: pd.DataFrame, mapping: dict, column: str) -> pd.DataFrame:
+    """
+    Apply a mapping dictionary to a specific column.
+    """
     df[column] = df[column].replace(mapping)
     return df
 
-def merge_team_data(match_df, team_df, team_side, prefix):
-    # Merge team ratings for a given side (HomeTeam or AwayTeam)
+def merge_team_data(match_df: pd.DataFrame, team_df: pd.DataFrame, team_side: str, prefix: str) -> pd.DataFrame:
+    """
+    Merge team ratings data with the match data for a given team side (HomeTeam or AwayTeam).
+    """
     subset = team_df.copy()
     subset.rename(columns={'Team': team_side}, inplace=True)
     rename_map = {
@@ -83,8 +126,10 @@ def merge_team_data(match_df, team_df, team_side, prefix):
     merged = match_df.merge(subset, on=["Season", team_side], how="left")
     return merged
 
-def merge_understat_data(match_df, understat_df, team_side, prefix):
-    # Merge understat stats for a given side
+def merge_understat_data(match_df: pd.DataFrame, understat_df: pd.DataFrame, team_side: str, prefix: str) -> pd.DataFrame:
+    """
+    Merge Understat stats with the match data for a given team side.
+    """
     subset = understat_df.copy()
     subset.rename(columns={'Team': team_side}, inplace=True)
     rename_map = {}
@@ -96,8 +141,8 @@ def merge_understat_data(match_df, understat_df, team_side, prefix):
     return merged
 
 def main():
-    # Load datasets
-    match_df = load_match_data()
+    # Load season match data
+    match_df = merge_season_files()
     ratings_df = load_team_ratings()
     understat_df = load_understat_stats()
     
@@ -105,12 +150,12 @@ def main():
         print("No match data loaded.")
         return
 
-    # Preprocess team names in all datasets
+    # Preprocess team names
     match_df = preprocess_team_names(match_df, ["HomeTeam", "AwayTeam"])
     ratings_df = preprocess_team_names(ratings_df, ["Team"])
     understat_df = preprocess_team_names(understat_df, ["Team"])
-
-    # Standardize team names using a mapping dictionary
+    
+    # Mapping dictionary to standardize team names
     mapping = {
         "man united": "manchester united",
         "man utd": "manchester united",
@@ -134,16 +179,16 @@ def main():
     match_df = apply_mapping(match_df, mapping, "AwayTeam")
     ratings_df = apply_mapping(ratings_df, mapping, "Team")
     understat_df = apply_mapping(understat_df, mapping, "Team")
-
-    # Merge team ratings for home and away teams
+    
+    # Merge team ratings
     combined = merge_team_data(match_df, ratings_df, "HomeTeam", "HomeRating")
     combined = merge_team_data(combined, ratings_df, "AwayTeam", "AwayRating")
     
-    # Merge understat data for home and away teams
+    # Merge Understat stats
     combined = merge_understat_data(combined, understat_df, "HomeTeam", "HomeUnderstat")
     combined = merge_understat_data(combined, understat_df, "AwayTeam", "AwayUnderstat")
     
-    # Select final columns needed for modeling
+    # Select final columns to keep
     final_cols = [
         "Date", "Season", "HomeTeam", "AwayTeam", "FTHG", "FTAG", "FTR", "PSH", "PSD", "PSA",
         "HomeRating_Overall", "HomeRating_Attack", "HomeRating_Midfield", "HomeRating_Defence", "HomeRating_Players", "HomeRating_StartingXI_AvgAge",
@@ -152,8 +197,12 @@ def main():
         "AwayUnderstat_M", "AwayUnderstat_W", "AwayUnderstat_D", "AwayUnderstat_L", "AwayUnderstat_G", "AwayUnderstat_GA", "AwayUnderstat_PTS", "AwayUnderstat_xG", "AwayUnderstat_xGA", "AwayUnderstat_xPTS"
     ]
     final_df = combined[final_cols]
-    final_df.to_csv("combined_dataset_clean.csv", index=False)
-    print("Clean combined dataset saved to combined_dataset_clean.csv")
+    
+    # Ensure the processed folder exists
+    os.makedirs(PROCESSED_DATA_PATH, exist_ok=True)
+    output_path = os.path.join(PROCESSED_DATA_PATH, "combined_dataset_clean.csv")
+    final_df.to_csv(output_path, index=False)
+    print(f"Clean combined dataset saved to {output_path}")
 
 if __name__ == "__main__":
     main()
